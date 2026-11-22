@@ -6,7 +6,7 @@
     import { activeEdit, activeFocus, activePopup, activeProfile, activeProject, activeShow, activeTagFilter, categories, drawer, focusedArea, focusMode, labelsDisabled, shows, sorted, sortedShowsList } from "../../../stores"
     import { translateText } from "../../../utils/language"
     import { getAccess } from "../../../utils/profile"
-    import { formatSearch, isRefinement, showSearch, tokenize } from "../../../utils/search"
+    import { formatSearch, showSearch } from "../../../utils/search"
     import Icon from "../../helpers/Icon.svelte"
     import T from "../../helpers/T.svelte"
     import { clone } from "../../helpers/array"
@@ -49,10 +49,6 @@
               : showsSorted.filter((s) => profile[s?.category || ""] !== "none" && (active === s.category || (active === "unlabeled" && (s.category === null || !$categories[s.category]))))
 
     export let firstMatch: null | any = null
-    let previousSearchTokens: string[] = []
-    $: if (active || filteredStored) previousSearchTokens = []
-    // $: if (active || filteredStored) previousFilteredShows = clone(filteredStored)
-    let previousFilteredShows: any[] = clone(filteredStored)
 
     $: drawerIsClosed = $drawer.height <= 40
     let shouldUpdate = false
@@ -85,11 +81,7 @@
         shouldUpdate = false
 
         if (searchValue.length > 1) {
-            const currentTokens = tokenize(formattedSearch)
-            const isNarrowing = isRefinement(currentTokens, previousSearchTokens)
-
-            const baseList = isNarrowing ? previousFilteredShows : clone(filteredStored)
-            const tagFiltered = filterByTags(baseList, $activeTagFilter)
+            const tagFiltered = filterByTags(filteredStored, $activeTagFilter)
 
             let filteredShowsTemp = showSearch(formattedSearch, tagFiltered)
 
@@ -98,8 +90,6 @@
 
             filteredShows = filteredShowsTemp
             firstMatch = filteredShows[0] || null
-            previousFilteredShows = clone(filteredShows)
-            previousSearchTokens = currentTokens
 
             // if no title matches
             if (active === "all" && !showLoading && searchValue.length > 5 && (firstMatch?.originalMatch || 0) < 70) {
@@ -116,8 +106,6 @@
         } else {
             filteredShows = filterByTags(clone(filteredStored), $activeTagFilter)
             firstMatch = null
-            previousSearchTokens = []
-            previousFilteredShows = clone(filteredStored)
             createFromSearch = false
             if ($activeShow?.data?.searchInput) {
                 activeShow.update((a) => {

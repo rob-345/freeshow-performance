@@ -35,7 +35,7 @@ export async function getApiBiblesList() {
     }
 }
 
-export async function loadJsonBible(id: string) {
+export async function loadJsonBible(id: string, forScriptureContent = false) {
     const scriptureData = get(scriptures)[id]
     const isApi = !!scriptureData?.api
 
@@ -55,7 +55,9 @@ export async function loadJsonBible(id: string) {
         return null
     }
 
-    const localBible = await getLocalBible(id)
+    // Content readers read chapters and verses. Own the metadata and book headers that the reader updates.
+    const cachedBible = forScriptureContent ? get(scripturesCache)[id] : null
+    const localBible = cachedBible?.books ? { ...cachedBible, metadata: cachedBible.metadata && clone(cachedBible.metadata) } : await getLocalBible(id)
     if (!localBible?.books) {
         console.warn("Local Bible not found")
         return null
@@ -105,7 +107,7 @@ async function getLocalBible(id: string) {
 
 // GET CONTENT
 
-export async function getActiveScripturesContent(selectedVerses: (number | string)[][] | null = null) {
+export async function getActiveScripturesContent(selectedVerses: (number | string)[][] | null = null, bibleReaders: Map<string, Awaited<ReturnType<typeof loadJsonBible>>> | null = null) {
     const tabId = get(drawerTabsData).scripture?.activeSubTab || ""
     const selectedScriptureData = get(scriptures)[tabId]
     if (!selectedScriptureData) return null
@@ -127,7 +129,9 @@ export async function getActiveScripturesContent(selectedVerses: (number | strin
     return (await Promise.all(
         currentScriptures
             .map(async (id) => {
-                const BibleData = await loadJsonBible(id)
+                const useReader = bibleReaders && !get(scriptures)[id]?.api
+                const BibleData = useReader && bibleReaders.has(id) ? bibleReaders.get(id) : await loadJsonBible(id, true)
+                if (useReader && BibleData) bibleReaders.set(id, BibleData)
                 if (!BibleData) return null
 
                 const Book = await BibleData.getBook(active?.book)
@@ -259,13 +263,14 @@ export function sortScriptureSelection(selection: (string | number)[]) {
 export async function playScripture() {
     if (get(outLocked)) return
 
-    const biblesContent = await getActiveScripturesContent()
+    const bibleReaders = new Map<string, Awaited<ReturnType<typeof loadJsonBible>>>()
+    const biblesContent = await getActiveScripturesContent(null, bibleReaders)
     if (!biblesContent?.length || !biblesContent[0]) return
 
     const selectedChapters = biblesContent[0].chapters || []
     const selectedVerses = biblesContent[0].activeVerses || []
 
-    const { slides, attributions, slideDynamicValues } = await getScriptureSlidesNew({ biblesContent, selectedChapters, selectedVerses }, true)
+    const { slides, attributions, slideDynamicValues } = await getScriptureSlidesNew({ biblesContent, bibleReaders, selectedChapters, selectedVerses }, true)
 
     const fullReferenceRange = buildFullReferenceRange(selectedChapters, selectedVerses)
     // include every selected chapter/verse in the displayed reference label
@@ -285,7 +290,8 @@ export async function playScripture() {
         }
         // WIP multiple verses, play from another version
 
-        const existingIndex = a.findIndex((a) => JSON.stringify(a) === JSON.stringify(newItem))
+        const scriptureKey = JSON.stringify(newItem)
+        const existingIndex = a.findIndex((a) => JSON.stringify(a) === scriptureKey)
         if (existingIndex > -1) a.splice(existingIndex, 1)
         a.push(newItem)
 
@@ -341,7 +347,7 @@ export async function playScripture() {
         const slides: any[] = []
         for (let i = 1; i <= includeCount; i++) {
             const verseIndex = lowestIndex - i
-            slides.push((await getScriptureSlidesNew({ biblesContent: biblesContent!, selectedChapters, selectedVerses: [[verseIndex]] }, true, true)).slides[0])
+            slides.push((await getScriptureSlidesNew({ biblesContent: biblesContent!, bibleReaders, selectedChapters, selectedVerses: [[verseIndex]] }, true, true)).slides[0])
         }
 
         return slides
@@ -352,7 +358,7 @@ export async function playScripture() {
         const slides: any[] = []
         for (let i = 1; i <= includeCount; i++) {
             const verseIndex = highestIndex + i
-            slides.push((await getScriptureSlidesNew({ biblesContent: biblesContent!, selectedChapters, selectedVerses: [[verseIndex]] }, true, true)).slides[0])
+            slides.push((await getScriptureSlidesNew({ biblesContent: biblesContent!, bibleReaders, selectedChapters, selectedVerses: [[verseIndex]] }, true, true)).slides[0])
         }
 
         return slides
@@ -591,7 +597,7 @@ export async function getScriptureSlidesNew(data: any, onlyOne = false, disableR
     const selectedChapters = data.selectedChapters as number[]
     const selectedVerses = data.selectedVerses as (number | string)[][]
     // const biblesContent = (data.biblesContent || []).filter(Boolean) as BibleContent[]
-    const biblesContent = (await getActiveScripturesContent(selectedVerses)) || []
+    const biblesContent = (await getActiveScripturesContent(selectedVerses, data.bibleReaders)) || []
     if (!biblesContent?.length || !biblesContent[0]) return { slides: [], groupNames: [], attributions: [], slideDynamicValues: [] }
 
     let perSlide = get(scriptureSettings).versesPerSlide || 3

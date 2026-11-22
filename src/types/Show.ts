@@ -100,6 +100,10 @@ export interface Slide {
 }
 
 export interface Item {
+    // Transient scripture render hints, validated against textbox content and dimensions.
+    scriptureSizeProbe?: boolean
+    scriptureAutoSizeReady?: boolean
+    scripturePreparedSize?: { fontSize: number; signature: string }
     id?: string
     lines?: Line[]
     list?: List

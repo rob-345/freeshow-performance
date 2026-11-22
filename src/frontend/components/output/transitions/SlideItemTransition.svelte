@@ -52,7 +52,7 @@
         // EXTRA DELAY
 
         // auto size delay
-        if (!outDelay) {
+        if (!outDelay && !item.scriptureAutoSizeReady) {
             let customTemplate = getStyleTemplate(outSlide, currentStyle)
             if (!Object.keys(customTemplate).length && outSlide?.id === "temp") customTemplate = $templates[$scriptureSettings.template] || {}
 

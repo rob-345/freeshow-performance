@@ -68,7 +68,7 @@
     // reuse autosize work across components by caching measurements alongside a signature
     // surface measurement completion for parents that want to precompute autosize
     const dispatch = createEventDispatcher<{
-        autosizeReady: { key: string; fontSize: number }
+        autosizeReady: { key: string; fontSize: number; preparedSignature?: string }
     }>()
 
     $: lines = clone(item?.lines)
@@ -110,6 +110,10 @@
     // remember which item signature we already reset local font size for
     let lastRenderedSignature = ""
     onMount(() => {
+        if (usePreparedScriptureSize()) {
+            loaded = true
+            return
+        }
         if (preview || fontPreview) {
             // Defer slightly to ensure DOM layout is ready for measurement, preventing 0-width errors
             setTimeout(() => (loaded = true), 20)
@@ -374,6 +378,7 @@
     let loopStop: NodeJS.Timeout | null = null
     let newCall = false
     async function calculateAutosize() {
+        if (usePreparedScriptureSize()) return
         if (item.type === "media" || item.type === "camera" || item.type === "icon") return
         if (isStage && !stageAutoSize) {
             return
@@ -483,7 +488,7 @@
         if (!elem) return
 
         // short-circuit expensive DOM work when we already measured identical content
-        const cacheKey = buildAutoSizeCacheKey()
+        const cacheKey = item.scriptureSizeProbe ? "" : buildAutoSizeCacheKey()
         const cacheSignature = buildAutoSizeSignature(elem.clientWidth, elem.clientHeight)
         const cachedResult = cacheKey ? readAutoSizeCache(cacheKey) : undefined
 
@@ -601,11 +606,26 @@
         })
     }
 
+    function preparedScriptureSignature() {
+        if (!itemElem || itemElem.clientWidth <= 0 || itemElem.clientHeight <= 0) return ""
+        const value = JSON.parse(buildAutoSizeSignature(itemElem.clientWidth, itemElem.clientHeight))
+        delete value.boxDimensions.containerWidth
+        delete value.boxDimensions.containerHeight
+        return JSON.stringify([value, itemElem.clientWidth, itemElem.clientHeight])
+    }
+    function usePreparedScriptureSize() {
+        const ready = item?.scripturePreparedSize
+        if (!ready || !Number.isFinite(ready.fontSize) || ready.fontSize <= 0 || ready.signature !== preparedScriptureSignature()) return false
+        fontSize = ready.fontSize
+        markAutoSizeReady()
+        return true
+    }
+
     // notify listeners that autosize finished (and stash readiness for this render)
     function markAutoSizeReady() {
         if (autoSizeReady) return
         autoSizeReady = true
-        if (autoSizeKey) dispatch("autosizeReady", { key: autoSizeKey, fontSize })
+        if (autoSizeKey) dispatch("autosizeReady", { key: autoSizeKey, fontSize, preparedSignature: item.scriptureSizeProbe ? preparedScriptureSignature() : undefined })
         if (hideUntilAutosized) requestAnimationFrame(() => (hideUntilAutosized = false))
     }
 

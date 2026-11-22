@@ -1,0 +1,7 @@
+extends: ./config/building/electron-builder.yaml
+artifactName: FreeShow-Performance-${version}-${arch}.${ext}
+afterSign: null
+publish: null
+mac:
+    identity: "-"
+    notarize: false

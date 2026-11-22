@@ -1,3 +1,7 @@
+# FreeShow performance improvements
+
+The Scripture Fix 2 changes and Mac build instructions are in [PERFORMANCE.md](PERFORMANCE.md).
+
 <img align="right" width="150" height="150" src="https://github.com/ChurchApps/FreeShow/assets/17619496/02ac9807-1f47-47fc-b895-b35f857c2b57">
 
 [![Downloads](https://img.shields.io/github/downloads/ChurchApps/freeshow/total)](https://github.com/ChurchApps/freeshow/releases)

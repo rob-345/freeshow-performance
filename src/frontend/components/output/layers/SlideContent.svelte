@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onDestroy, onMount } from "svelte"
     import type { Item, OutSlide, SlideData, TimelineAction, Transition } from "../../../../types/Show"
+    import { uid } from "uid"
     import { showsCache, slideTimelineSpeedMultiplier } from "../../../stores"
     import { waitUntilValueIsDefined } from "../../../utils/common"
     import { shouldItemBeShown } from "../../edit/scripts/itemHelpers"
@@ -146,7 +147,8 @@
     }
 
     // remove hidden probes once the underlying textbox reports that its autosize cache is hot
-    function handlePrecomputeReady(event: CustomEvent<{ key: string; fontSize: number }>) {
+    function handlePrecomputeReady(event: CustomEvent<{ key: string; fontSize: number; preparedSignature?: string }>) {
+        if (acceptPreparedSize(event)) return
         const key = event.detail?.key
         if (!key || !precomputePending.has(key)) return
         precomputePending.delete(key)
@@ -158,8 +160,88 @@
         return item?.id ? String(item.id) : `idx-${index}`
     }
 
+    type PreparedState = {
+        items: Item[]
+        pending: Map<string, number>
+        resolve: (items: Item[] | null) => void
+        timer: ReturnType<typeof setTimeout> | null
+        finish: () => void
+    }
+    let preparation: PreparedState | null = null
+    let destroyed = false
+    function cancelPreparation() {
+        const previous = preparation
+        preparation = null
+        if (previous) {
+            if (previous.timer) clearTimeout(previous.timer)
+            previous.resolve(null)
+        }
+    }
+    onDestroy(() => {
+        destroyed = true
+        updateGeneration++
+        if (timeout) clearTimeout(timeout)
+        cancelPreparation()
+    })
+    function canPrepareScripture(items: Item[]) {
+        return !mirror && outSlide?.id === "temp" && !!outSlide.customDynamicValues?.scripture_reference && !Number(currentStyle?.lines || 0) && !currentSlide?.timeline?.actions?.length && Array.isArray(items) && items.length > 0 && items.every((item) => (item.type || "text") === "text" && !item.chords?.enabled && !item.lineReveal && !item.clickReveal && !(item.lines || []).some((line) => (line.text || []).some((part) => String(part.value || "").includes("{"))))
+    }
+    function prepareScripture(items: Item[]): Promise<Item[] | null> {
+        cancelPreparation()
+        return new Promise((resolve) => {
+            const state: PreparedState = { items: clone(items), pending: new Map(), resolve, timer: null, finish: () => {} }
+            preparation = state
+            const targets: typeof precomputeTargets = []
+            state.items.forEach((item, index) => {
+                if (item.textFit === "none" || (!item.auto && !item.textFit)) return
+                const key = "scripture-ready:" + uid(12) + ":" + index
+                state.pending.set(key, index)
+                targets.push({ item: { ...clone(item), scriptureSizeProbe: true }, index, key })
+            })
+            precomputePending = new Set(state.pending.keys())
+            precomputeTargets = targets
+            state.finish = () => {
+                if (preparation !== state) return
+                if (state.timer) clearTimeout(state.timer)
+                preparation = null
+                precomputePending.clear()
+                precomputeTargets = []
+                state.items.forEach((item) => (item.scriptureAutoSizeReady = true))
+                resolve(state.items)
+            }
+            if (!state.pending.size) {
+                state.finish()
+                return
+            }
+            state.timer = setTimeout(() => {
+                if (preparation !== state) return
+                preparation = null
+                precomputePending.clear()
+                precomputeTargets = []
+                resolve(null)
+            }, 600)
+        })
+    }
+    function acceptPreparedSize(event: CustomEvent<{ key: string; fontSize: number; preparedSignature?: string }>) {
+        const detail = event.detail
+        const state = preparation
+        if (!state || !state.pending.has(detail?.key)) return false
+        if (!Number.isFinite(detail.fontSize) || detail.fontSize <= 0 || !detail.preparedSignature) return true
+        const item = state.items[state.pending.get(detail.key)!]
+        item.autoFontSize = detail.fontSize
+        item.scripturePreparedSize = { fontSize: detail.fontSize, signature: detail.preparedSignature }
+        state.pending.delete(detail.key)
+        precomputePending.delete(detail.key)
+        if (!state.pending.size) state.finish()
+        return true
+    }
+
     let isClearingToEmpty = false
     async function updateItems() {
+        const generation = ++updateGeneration
+        if (timeout) clearTimeout(timeout)
+        cancelPreparation()
+        let nextItems = currentSlide?.items
         let betweenClearingTransition = transition.between || transition
         if (betweenClearingTransition?.type === "none") betweenClearingTransition.duration = 0
 
@@ -188,17 +270,27 @@
 
         if (isClearingToEmpty) await waitUntilValueIsDefined(() => !isClearingToEmpty, 10, betweenClearingTransition.duration)
 
-        scheduleAutoSizePrecompute(currentSlide.items)
+        if (generation !== updateGeneration || destroyed) return
+        if (canPrepareScripture(nextItems)) {
+            const context = JSON.stringify([outSlide, currentSlide, currentStyle, lines, transition, ratio, mirror])
+            const prepared = await prepareScripture(nextItems)
+            if (generation !== updateGeneration || destroyed) return
+            if (context !== JSON.stringify([outSlide, currentSlide, currentStyle, lines, transition, ratio, mirror])) {
+                updateItems()
+                return
+            }
+            if (prepared) nextItems = prepared
+        } else scheduleAutoSizePrecompute(nextItems)
 
         // get any items with no transition between the two slides
         let oldItemTransition = currentItems.find((a) => a.actions?.transition)?.actions?.transition
-        let newItemTransition = currentSlide.items.find((a) => a.actions?.transition)?.actions?.transition
+        let newItemTransition = nextItems.find((a) => a.actions?.transition)?.actions?.transition
         let itemTransitionDuration: number | null = null
         if (oldItemTransition && JSON.stringify(oldItemTransition) === JSON.stringify(newItemTransition)) {
             itemTransitionDuration = oldItemTransition.duration ?? null
             if (oldItemTransition.type === "none") itemTransitionDuration = 0
             // find any item that should have no transition!
-            else if (currentSlide.items.find((a) => a.actions?.transition?.duration === 0 || a.actions?.transition?.type === "none")) itemTransitionDuration = 0
+            else if (nextItems.find((a) => a.actions?.transition?.duration === 0 || a.actions?.transition?.type === "none")) itemTransitionDuration = 0
         }
 
         let currentTransition = transition.between || transition.in || transition
@@ -215,12 +307,12 @@
 
         // First, check if ANY item on the slide has a real transition
         // If so, all items should animate together (no persistent items)
-        const slideHasAnyTransition = currentSlide.items.some((item: Item) => {
+        const slideHasAnyTransition = nextItems.some((item: Item) => {
             const itemTrans = item.actions?.transition
             return hasRealTransition(itemTrans, currentTransition)
         })
 
-        currentSlide.items.forEach((newItem: Item, newIndex: number) => {
+        nextItems.forEach((newItem: Item, newIndex: number) => {
             // Find matching old item by index (position-based matching for slides)
             const oldItem = currentItems[newIndex]
 
@@ -243,7 +335,7 @@
         persistentItems = newPersistentItems
 
         // between
-        if (currentItems.length && currentSlide.items.length) transitioningBetween = true
+        if (currentItems.length && nextItems.length) transitioningBetween = true
 
         if (timeout) clearTimeout(timeout)
 
@@ -253,17 +345,17 @@
             current = {
                 outSlide: clone(outSlide),
                 slideData: clone(slideData),
-                currentSlide: clone(currentSlide),
+                currentSlide: { ...clone(currentSlide), items: clone(nextItems) },
                 lines: clone(lines),
                 currentStyle: clone(currentStyle)
             }
             // Keep currentItems in sync but don't toggle show
-            currentItems = clone(currentSlide.items || [])
+            currentItems = clone(nextItems || [])
             transitioningBetween = false
             return
         }
 
-        const gen = ++updateGeneration
+        const gen = generation
 
         // wait for between to update out transition
         timeout = setTimeout(() => {
@@ -275,11 +367,11 @@
                 if (gen !== updateGeneration) return
                 // Only include items that need transitioning in currentItems
                 // Persistent items are rendered separately
-                currentItems = clone(currentSlide.items || [])
+                currentItems = clone(nextItems || [])
                 current = {
                     outSlide: clone(outSlide),
                     slideData: clone(slideData),
-                    currentSlide: clone(currentSlide),
+                    currentSlide: { ...clone(currentSlide), items: clone(nextItems) },
                     lines: clone(lines),
                     currentStyle: clone(currentStyle)
                 }
